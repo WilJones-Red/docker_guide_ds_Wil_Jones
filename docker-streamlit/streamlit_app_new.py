@@ -76,64 +76,30 @@ def display_data_tabs(df):
             if 'total_sleep_duration' in df.columns:
                 col1, col2 = st.columns(2)
                 
-                # Filter out zero/null values for more accurate display
-                valid_sleep = df[df['total_sleep_duration'] > 0]['total_sleep_duration']
+                with col1:
+                    df_copy = df.copy()
+                    df_copy['sleep_hours'] = df_copy['total_sleep_duration'] / 3600
+                    fig = px.histogram(df_copy, x='sleep_hours', nbins=30,
+                                     title='Sleep Duration Distribution (hours)')
+                    st.plotly_chart(fig, use_container_width=True)
                 
-                if len(valid_sleep) > 0:
-                    # Check if values are scores (0-100) or seconds (>1000)
-                    avg_val = valid_sleep.mean()
-                    if avg_val > 1000:
-                        # Values are in seconds, convert to hours
-                        conversion_factor = 3600
-                    else:
-                        # Values are already scores or in some other unit - treat as hours if < 24
-                        # or as scores/contributor values if higher
-                        if avg_val <= 24:
-                            conversion_factor = 1  # Already in hours
-                        else:
-                            # Likely contributor scores (0-100), divide by some factor
-                            # For Oura API v2, total_sleep contributor is a score 0-100
-                            # We need actual sleep duration - skip displaying if not available
-                            st.info("Sleep duration data format not recognized. Showing raw values.")
-                            conversion_factor = 1
+                with col2:
+                    avg_sleep_hours = (df['total_sleep_duration'] / 3600).mean()
+                    st.metric("Average Sleep Duration", f"{avg_sleep_hours:.1f} hours")
                     
-                    with col1:
-                        df_copy = df.copy()
-                        df_copy['sleep_hours'] = df_copy['total_sleep_duration'] / conversion_factor
-                        df_copy = df_copy[df_copy['sleep_hours'] > 0]  # Filter zeros
-                        if len(df_copy) > 0:
-                            fig = px.histogram(df_copy, x='sleep_hours', nbins=30,
-                                             title='Sleep Duration Distribution (hours)')
-                            st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        avg_sleep_hours = valid_sleep.mean() / conversion_factor
-                        st.metric("Average Sleep Duration", f"{avg_sleep_hours:.1f} hours")
-                        
-                        df_copy = df.copy()
-                        df_copy['sleep_hours'] = df_copy['total_sleep_duration'] / conversion_factor
-                        df_copy = df_copy[df_copy['sleep_hours'] > 0]  # Filter zeros
-                        if len(df_copy) > 0:
-                            fig = px.line(df_copy, x=date_col, y='sleep_hours',
-                                        title='Sleep Duration Over Time')
-                            st.plotly_chart(fig, use_container_width=True)
+                    df_copy = df.copy()
+                    df_copy['sleep_hours'] = df_copy['total_sleep_duration'] / 3600
+                    fig = px.line(df_copy, x=date_col, y='sleep_hours',
+                                title='Sleep Duration Over Time')
+                    st.plotly_chart(fig, use_container_width=True)
             
             if all(col in df.columns for col in ['deep_sleep', 'rem_sleep', 'light_sleep']):
                 st.subheader("Sleep Stages")
-                # Convert from seconds to hours for display
-                df_stages = df.copy()
-                df_stages['deep_sleep_hours'] = df_stages['deep_sleep'] / 3600
-                df_stages['rem_sleep_hours'] = df_stages['rem_sleep'] / 3600
-                df_stages['light_sleep_hours'] = df_stages['light_sleep'] / 3600
-                
-                sleep_stages = df_stages[[date_col, 'deep_sleep_hours', 'rem_sleep_hours', 'light_sleep_hours']].melt(
-                    id_vars=date_col, var_name='Stage', value_name='Hours'
+                sleep_stages = df[[date_col, 'deep_sleep', 'rem_sleep', 'light_sleep']].melt(
+                    id_vars=date_col, var_name='Stage', value_name='Score'
                 )
-                # Clean up stage names
-                sleep_stages['Stage'] = sleep_stages['Stage'].str.replace('_hours', '').str.replace('_', ' ').str.title()
-                
-                fig = px.bar(sleep_stages, x=date_col, y='Hours', color='Stage',
-                           title='Sleep Stages Over Time (Hours)')
+                fig = px.bar(sleep_stages, x=date_col, y='Score', color='Stage',
+                           title='Sleep Stages Over Time')
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No sleep data available.")
@@ -245,9 +211,9 @@ elif api_token:
             with st.spinner("Fetching your Oura Ring data..."):
                 headers = {'Authorization': f'Bearer {api_token}'}
                 
-                # Fetch sleep data - use sleep sessions endpoint for actual durations
+                # Fetch sleep data
                 sleep_response = requests.get(
-                    "https://api.ouraring.com/v2/usercollection/sleep",
+                    "https://api.ouraring.com/v2/usercollection/daily_sleep",
                     headers=headers,
                     params={'start_date': start_date.strftime('%Y-%m-%d'), 'end_date': end_date.strftime('%Y-%m-%d')}
                 )
@@ -270,29 +236,14 @@ elif api_token:
                     # Process sleep data
                     sleep_data = []
                     if sleep_response.status_code == 200:
-                        raw_sleep_data = sleep_response.json().get('data', [])
-                        
-                        # DEBUG: Show full API response
-                        if raw_sleep_data:
-                            with st.expander("🔍 DEBUG: Raw API Response"):
-                                st.json(raw_sleep_data[0])
-                        
-                        for item in raw_sleep_data:
-                            # Sleep sessions endpoint has actual durations in seconds
+                        for item in sleep_response.json().get('data', []):
                             sleep_data.append({
                                 'date': item.get('day'),
-                                'sleep_score': item.get('readiness', {}).get('score') if item.get('readiness') else None,
-                                'total_sleep_duration': item.get('total_sleep_duration', 0),
-                                'time_in_bed': item.get('time_in_bed', 0),
-                                'deep_sleep': item.get('deep_sleep_duration', 0),
-                                'rem_sleep': item.get('rem_sleep_duration', 0),
-                                'light_sleep': item.get('light_sleep_duration', 0),
-                                'awake_time': item.get('awake_time', 0),
-                                'sleep_efficiency': item.get('efficiency', 0),
-                                'sleep_latency': item.get('latency', 0),
-                                'average_heart_rate': item.get('average_heart_rate', 0),
-                                'lowest_heart_rate': item.get('lowest_heart_rate', 0),
-                                'average_hrv': item.get('average_hrv', 0),
+                                'sleep_score': item.get('score'),
+                                'total_sleep_duration': item.get('contributors', {}).get('total_sleep', 0),
+                                'deep_sleep': item.get('contributors', {}).get('deep_sleep', 0),
+                                'rem_sleep': item.get('contributors', {}).get('rem_sleep', 0),
+                                'light_sleep': item.get('contributors', {}).get('light_sleep', 0),
                             })
                     
                     # Process activity data
